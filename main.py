@@ -886,6 +886,7 @@ FORMAT:
         if not state.show_thought:
             orig_text = thought_pattern.sub("", orig_text)
         
+        # 确保只设置纯文本内容，避免添加其他格式
         resp.completion_text = orig_text.strip()
         
         if updates:
@@ -897,7 +898,11 @@ FORMAT:
             logger.info("[WzlFavorability] 本次无情感变更。")
         
         if state.show_status and updates:
-            resp.completion_text += f"\n\n{self._format_emotional_state(state)}"
+            # 添加状态信息时确保格式正确，避免额外的数据结构
+            status_info = f"\n\n{self._format_emotional_state(state)}"
+            # 确保 _format_emotional_state 返回的是纯文本
+            resp.completion_text += str(status_info)
+
 
     def _apply_emotion_updates(self, state: EmotionalState, updates: Dict[str, int]):
         # 定义一个简单的截断函数，限制变化幅度
