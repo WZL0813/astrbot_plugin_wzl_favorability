@@ -35,6 +35,12 @@
         "default": [2411273874],
         "hint": "在此列表中的QQ号可以使用管理员命令"
     },
+    "owner_qq_list": {
+        "description": "主人QQ列表",
+        "type": "list",
+        "default": [2411273874],
+        "hint": "在此列表中的QQ号将被识别为主人关系，享有最高优先级"
+    },
     "plugin_priority": {
         "description": "插件优先级",
         "type": "int",

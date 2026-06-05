@@ -372,12 +372,13 @@ class UserCommandHandler:
     
     async def show_emotional_state(self, event: AstrMessageEvent):
         user_key = self.plugin._get_user_key(event)
+        user_id = event.get_sender_id()
         state = await self.plugin.user_manager.get_user_state(user_key)
         if state.is_blacklisted:
              yield event.plain_result("【系统提示】您已被列入黑名单，无法查看详细状态。")
              event.stop_event()
              return
-        yield event.plain_result(self.plugin._format_emotional_state(state))
+        yield event.plain_result(self.plugin._format_emotional_state(state, user_id))
         event.stop_event()
     
     async def toggle_status_display(self, event: AstrMessageEvent):
@@ -498,7 +499,9 @@ class AdminCommandHandler:
         if not self.plugin._is_admin(event): return
         user_key = self._resolve_user_key(user_input)
         state = await self.plugin.user_manager.get_user_state(user_key)
-        yield event.plain_result(self.plugin._format_emotional_state(state))
+        # 获取用户的实际ID（从user_key中解析）
+        user_id = user_key.split('_')[-1] if '_' in user_key else user_key
+        yield event.plain_result(self.plugin._format_emotional_state(state, user_id))
         event.stop_event()
     
     async def backup_data(self, event: AstrMessageEvent):
@@ -513,7 +516,7 @@ class AdminCommandHandler:
 
 # ==================== 主插件类 ====================
 
-@register("astrbot_plugin_wzl_favorability", "WZL", "高级好感度系统V6.2", "6.2")
+@register("astrbot_plugin_wzl_favorability", "WZL", "高级好感度系统V6.8", "6.8")
 class EmotionAIPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -556,6 +559,10 @@ class EmotionAIPlugin(Star):
         
         raw_list = self.config.get("admin_qq_list", [])
         self.admin_qq_list = [str(qq) for qq in raw_list if str(qq).isdigit()]
+        
+        raw_owner_list = self.config.get("owner_qq_list", [])
+        self.owner_qq_list = [str(qq) for qq in raw_owner_list if str(qq).isdigit()]
+        
         self.plugin_priority = self.config.get("plugin_priority", 100000)
         
     async def _auto_save_loop(self):
@@ -570,11 +577,17 @@ class EmotionAIPlugin(Star):
         uid = event.get_sender_id()
         return f"{event.unified_msg_origin}_{uid}" if self.session_based else uid
     
-    def _format_emotional_state(self, state: EmotionalState) -> str:
+    def _format_emotional_state(self, state: EmotionalState, user_id: str = None) -> str:
+        # 检查是否为主人
+        if user_id and user_id in self.owner_qq_list:
+            display_relationship = "主人"
+        else:
+            display_relationship = state.relationship
+        
         p = self.analyzer.get_emotional_profile(state)
         return (f"【当前情感状态】\n==================\n"
                 f"好感度：{state.favor} | 亲密度：{state.intimacy}\n"
-                f"关系：{state.relationship} | 趋势：{p['relationship_trend']}\n"
+                f"关系：{display_relationship} | 趋势：{p['relationship_trend']}\n"
                 f"态度：{state.attitude} | 主导：{p['dominant_emotion']}\n"
                 f"互动：{state.interaction_count}次 (正面 {p['positive_ratio']:.1f}%)\n\n"
                 f"【情感维度详情】\n"
@@ -583,7 +596,11 @@ class EmotionAIPlugin(Star):
                 f"  愤怒：{state.anger} | 期待：{state.anticipation} | 得意：{state.pride}\n"
                 f"  内疚：{state.guilt} | 害羞：{state.shame} | 嫉妒：{state.envy}")
 
-    def _calculate_relationship_level(self, state: EmotionalState) -> str:
+    def _calculate_relationship_level(self, state: EmotionalState, user_id: str = None) -> str:
+        # 检查是否为主人
+        if user_id and user_id in self.owner_qq_list:
+            return "主人"
+        # 原有逻辑
         score, att = state.intimacy, state.attitude
         if score < 20: return "陌生人"
         if att in ["溺爱", "喜爱", "友好"]:
@@ -612,6 +629,10 @@ class EmotionAIPlugin(Star):
     def _is_admin(self, event: AstrMessageEvent) -> bool:
         """检查是否为管理员"""
         return event.role == "admin" or event.get_sender_id() in self.admin_qq_list
+    
+    def _is_owner(self, event: AstrMessageEvent) -> bool:
+        """检查是否为主人"""
+        return event.get_sender_id() in self.owner_qq_list
 
     def _create_backup(self) -> str:
         """创建数据备份"""
@@ -634,7 +655,7 @@ class EmotionAIPlugin(Star):
         return str(backup_path.relative_to(data_dir))
 
     @event_filter.event_message_type(event_filter.EventMessageType.ALL, priority=1000000)
-    async def check_blacklist(self, event: AstrMessageEvent):
+    async def check_blacklist(self, event: AstrMessageEvent, _: str = ""):
         if self._is_admin(event):
             msg = event.message_str.strip()
             if msg.startswith(("/重置好感", "/设置情感", "设置情感")): return
@@ -646,7 +667,7 @@ class EmotionAIPlugin(Star):
             event.stop_event()
 
     @event_filter.on_llm_request(priority=100000)
-    async def inject_emotional_context(self, event: AstrMessageEvent, req: ProviderRequest):
+    async def inject_emotional_context(self, event: AstrMessageEvent, req: ProviderRequest, _1: str = "", _2: str = "", _3: str = ""):
         user_key = self._get_user_key(event)
         state = await self.user_manager.get_user_state(user_key)
         await self.cache.set(f"state_{user_key}", state)
@@ -718,7 +739,8 @@ FORMAT:
             req.contexts = cleaned_contexts
 
         # 2. 注入 System Prompt
-        req.system_prompt += f"\n{self._build_cognitive_context(state)}"
+        user_id = event.get_sender_id()
+        req.system_prompt += f"\n{self._build_cognitive_context(state, user_id)}"
 
         # 3. 【关键】注入带 <thought> 的 One-Shot 样本
         req.contexts.append({
@@ -735,7 +757,7 @@ FORMAT:
 [决策] 输出标准状态报告。
 [更新] joy:0
 </thought>
-报告前辈，星绘的情感核心运转正常，随时准备为您服务。"""
+报告前辈，若琳的情感核心运转正常，随时准备为您服务。"""
         })
 
         # 4. 【核心修改】以 System 身份独立注入强制指令
@@ -744,7 +766,7 @@ FORMAT:
             "content": FORCE_MSG
         })
 
-    def _build_cognitive_context(self, state: EmotionalState) -> str:
+    def _build_cognitive_context(self, state: EmotionalState, user_id: str = None) -> str:
         # 1. 获取前三个主导情感 (Count=3)
         top_emotions = self.analyzer.get_dominant_emotions(state, count=3)
         
@@ -788,9 +810,15 @@ FORMAT:
             
             tone_instruction = f"【混合语气要求】{status_desc}。请{guide_desc}。"
 
+        # 检查是否为主人
+        if user_id and user_id in self.owner_qq_list:
+            display_relationship = "主人"
+        else:
+            display_relationship = state.relationship
+        
         return f"""
 【当前情感与认知状态】
-关系：{state.relationship} | 态度：{state.attitude}
+关系：{display_relationship} | 态度：{state.attitude}
 好感度：{state.favor} | 亲密度：{state.intimacy}
 **详细情感面板**：{emotion_status_str}
 
@@ -824,10 +852,67 @@ FORMAT:
 """
 
     @event_filter.on_llm_response(priority=100000)
-    async def process_emotional_update(self, event: AstrMessageEvent, resp: LLMResponse):
+    async def process_emotional_update(self, event: AstrMessageEvent, resp: LLMResponse, *args, **kwargs):
         user_key = self._get_user_key(event)
         state = await self.user_manager.get_user_state(user_key)
-        orig_text = resp.completion_text
+        
+        # [修复] 确保为字符串，并强力清洗多层嵌套的消息链 JSON 污染
+        orig_text = resp.completion_text if isinstance(resp.completion_text, str) else str(resp.completion_text)
+        
+        # [关键修复] 递归清洗嵌套的 [{'type': 'text', 'text': '...'}] 格式，最深支持5层嵌套
+        def clean_message_chain(text: str, depth: int = 0) -> str:
+            if depth > 5:
+                return text
+            
+            # 检测是否为消息链格式
+            if not (("[{'type': " in text or '[{"type": ' in text) and "'text': " in text):
+                return text
+            
+            try:
+                import json
+                import ast
+                
+                # 尝试安全解析 Python 字面量（比 JSON 更宽容单引号）
+                text_stripped = text.strip()
+                if text_stripped.startswith('[') and text_stripped.endswith(']'):
+                    try:
+                        parsed = ast.literal_eval(text_stripped)
+                        if isinstance(parsed, list) and parsed:
+                            item = parsed[0]
+                            if isinstance(item, dict) and 'text' in item:
+                                inner_text = item['text']
+                                # 递归处理内层可能还有嵌套的情况
+                                return clean_message_chain(inner_text, depth + 1)
+                    except (SyntaxError, ValueError):
+                        pass
+                
+                # 备用：正则提取最内层的 text 字段
+                # 优先匹配最内层的单引号 text 值（非贪婪）
+                patterns = [
+                    r"'text':\s*'((?:\\.|[^'\\])*)'",  # 单引号包裹
+                    r'"text":\s*"((?:\\.|[^"\\])*)"',   # 双引号包裹
+                ]
+                
+                for pattern in patterns:
+                    matches = re.findall(pattern, text)
+                    if matches:
+                        # 取最后一个匹配（通常是最内层）
+                        inner = matches[-1]
+                        # 处理转义字符
+                        inner = inner.replace('\\\\n', '\n').replace('\\n', '\n')
+                        inner = inner.replace("\\'", "'").replace('\\"', '"')
+                        inner = inner.replace('\\\\', '\\')
+                        return clean_message_chain(inner, depth + 1)
+                        
+            except Exception as e:
+                logger.debug(f"[WzlFavorability] 清洗层级 {depth} 失败: {e}")
+            
+            return text
+        
+        # 执行清洗，并统一处理换行符
+        orig_text = clean_message_chain(orig_text)
+        # 额外确保 \n 被正确解析（处理双重转义的情况）
+        orig_text = orig_text.replace('\\\\n', '\n').replace('\\n', '\n')
         
         # [调试] 打印 LLM 的完整输出
         logger.info(f"[WzlFavorability DEBUG] LLM 完整输出:\n{orig_text}")
@@ -892,16 +977,18 @@ FORMAT:
         if updates:
             logger.info(f"[WzlFavorability] 最终捕获的情感变更: {updates}")
             self._apply_emotion_updates(state, updates)
-            self._update_interaction_stats(state, updates)
+            user_id = event.get_sender_id()
+            self._update_interaction_stats(state, updates, user_id)
             await self.user_manager.update_user_state(user_key, state)
         else:
             logger.info("[WzlFavorability] 本次无情感变更。")
         
         if state.show_status and updates:
-            # 添加状态信息时确保格式正确，避免额外的数据结构
-            status_info = f"\n\n{self._format_emotional_state(state)}"
+            # 修改状态信息的添加方式，确保不会产生多余的格式化字符
+            user_id = event.get_sender_id()
+            status_info = f"\n\n{self._format_emotional_state(state, user_id)}"
             # 确保 _format_emotional_state 返回的是纯文本
-            resp.completion_text += str(status_info)
+            resp.completion_text = resp.completion_text.rstrip() + status_info
 
 
     def _apply_emotion_updates(self, state: EmotionalState, updates: Dict[str, int]):
@@ -936,7 +1023,7 @@ FORMAT:
             state.is_blacklisted = True
             logger.info(f"[WzlFavorability] 用户 {state} 触发黑名单")
 
-    def _update_interaction_stats(self, state: EmotionalState, updates: Dict[str, int]):
+    def _update_interaction_stats(self, state: EmotionalState, updates: Dict[str, int], user_id: str = None):
         state.interaction_count += 1
         state.last_interaction = time.time()
         
@@ -947,13 +1034,13 @@ FORMAT:
         elif neg_score > pos_score: state.negative_interactions += 1
         
         state.attitude = self._calculate_attitude(state)
-        state.relationship = self._calculate_relationship_level(state)
+        state.relationship = self._calculate_relationship_level(state, user_id)
 
     # ==================== 注册命令 ====================
     
     @event_filter.command("好感度", priority=5)
     @event_filter.regex(r"^好感度$")
-    async def cmd_show_state(self, event: AstrMessageEvent):
+    async def cmd_show_state(self, event: AstrMessageEvent, _: str = ""):
         async for r in self.user_commands.show_emotional_state(event): yield r
 
     @event_filter.command("状态显示", priority=5)
