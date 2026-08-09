@@ -516,7 +516,7 @@ class AdminCommandHandler:
 
 # ==================== 主插件类 ====================
 
-@register("astrbot_plugin_wzl_favorability", "WZL", "高级好感度系统V6.9.1", "6.9.1")
+@register("astrbot_plugin_wzl_favorability", "WZL", "高级好感度系统V6.9.2", "6.9.2")
 class EmotionAIPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -547,7 +547,7 @@ class EmotionAIPlugin(Star):
         )
         
         self.auto_save_task = asyncio.create_task(self._auto_save_loop())
-        logger.info("WzlFavorability v6.9.1 (Cognitive Resonance Engine) Loaded")
+        logger.info("WzlFavorability v6.9.2 (Cognitive Resonance Engine) Loaded")
         
     def _validate_and_init_config(self):
         self.session_based = bool(self.config.get("session_based", False))
@@ -873,9 +873,9 @@ FORMAT:
             r"</?(?:thought|thinking)[^>]*>",
             re.IGNORECASE
         )
-        # think 消息链 [{'type': 'think', ...}]
+        # think/thought 消息链 [{'type': 'think', ...}] 或 [{'type': 'thought', ...}]
         think_chain_pattern = re.compile(
-            r"\[\s*\{[^}]*?['\"]type['\"]\s*:\s*['\"]think['\"][^}]*?\}\s*\]",
+            r"\[\s*\{[^}]*?['\"]type['\"]\s*:\s*['\"](?:think|thought)['\"][^}]*?\}\s*\]",
             re.DOTALL
         )
         
@@ -899,6 +899,8 @@ FORMAT:
             if not ("[{'type': " in text or '[{"type": ' in text) and not ("{'type': " in text or '{"type": ' in text):
                 return text
             
+            THINK_TYPES = {'think', 'thought'}
+            
             try:
                 import ast
                 
@@ -911,7 +913,7 @@ FORMAT:
                             for item in parsed:
                                 if isinstance(item, dict):
                                     item_type = item.get('type', '')
-                                    if item_type == 'think':
+                                    if item_type in THINK_TYPES:
                                         continue
                                     if 'text' in item:
                                         text_parts.append(str(item['text']))
@@ -927,7 +929,7 @@ FORMAT:
                     try:
                         parsed = ast.literal_eval(text_stripped)
                         if isinstance(parsed, dict):
-                            if parsed.get('type', '') == 'think':
+                            if parsed.get('type', '') in THINK_TYPES:
                                 return ""
                             if 'text' in parsed:
                                 return clean_message_chain(str(parsed['text']), depth + 1)

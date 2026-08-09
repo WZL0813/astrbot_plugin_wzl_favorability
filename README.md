@@ -245,7 +245,13 @@ history_clean_pattern = r"(?:```(?:xml|text)?\s*)?<(?:thought|thinking)>[\s\S]*?
 
 ## 📅 版本历史 | Version History
 
-<details open> <summary><strong>🔧 v6.9.1 - thought 标签清洗架构重构 (Current)</strong></summary>
+<details open> <summary><strong>🩹 v6.9.2 - thought/think 双格式兼容修复 (Current)</strong></summary>
+
+正则根本修复：将 `think_chain_pattern` 中错误的 `think(?:ought)?` 改为 `think|thought`。前者因 `think`(t-h-i-n-k) 与 `thought`(t-h-o-u-g-h-t) 并非前缀关系而永远无法匹配 `thought`，导致 `[{'type': 'thought', 'content': '...'}]` 格式的思考块全部泄露。
+
+扩展类型过滤：`clean_message_chain` 的 `THINK_TYPES` 集合从仅 `{'think'}` 扩展为 `{'think', 'thought'}`，同时覆盖 `type: 'thought'` + `'content'` key 和 `type: 'think'` + `'think'` key 两种 LLM 原生思考格式。
+
+</details><details> <summary><strong>🔧 v6.9.1 - thought 标签清洗架构重构</strong></summary>
 
 三重无条件 thought 清除：将 `<thought>` / `<thinking>` 标签的移除逻辑从"条件性（依赖 show_thought 开关）"改为"始终移除"，彻底杜绝标签泄露。show_thought 开启时以受控格式 `【内心独白】` 重新附加。
 
