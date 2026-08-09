@@ -245,7 +245,15 @@ history_clean_pattern = r"(?:```(?:xml|text)?\s*)?<(?:thought|thinking)>[\s\S]*?
 
 ## 📅 版本历史 | Version History
 
-<details open> <summary><strong>🔥 v6.2 - 稳定性重构与防呆优化 (Current)</strong></summary>
+<details open> <summary><strong>🛠️ v6.9 - 思考信息彻底清除 (Current)</strong></summary>
+
+彻底解决 LLM 原生思考模式泄露问题：当模型输出原生 `[{'type': 'think', 'think': '...', 'encrypted': None}]` 格式的思考块时，不再原样透传至用户可见回复，而是自动过滤。
+
+多层清洗架构：新增正则预剥离 + 递归 AST 解析双保险机制，即使消息链被嵌套包裹也能正确识别并跳过 think 类型节点，仅提取 text 类型的有效回复内容。
+
+残留清理兜底：在清洗链末尾追加空列表 `[]` 与空 dict `{}` 的正则清除，防止 think 被移除后留下空壳。
+
+</details><details> <summary><strong>🔥 v6.2 - 稳定性重构与防呆优化</strong></summary>
 强制思维链注入：引入 "Protocol Enforcement" 机制，通过伪装底层协议握手，强制 Gemini 等强对齐模型输出 <thought> 标签，突破安全限制。
 
 代谢平衡系统：实现负面情感消解和激情冷却机制，情感数值动态平衡。

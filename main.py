@@ -516,7 +516,7 @@ class AdminCommandHandler:
 
 # ==================== 主插件类 ====================
 
-@register("astrbot_plugin_wzl_favorability", "WZL", "高级好感度系统V6.8", "6.8")
+@register("astrbot_plugin_wzl_favorability", "WZL", "高级好感度系统V6.9", "6.9")
 class EmotionAIPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -547,7 +547,7 @@ class EmotionAIPlugin(Star):
         )
         
         self.auto_save_task = asyncio.create_task(self._auto_save_loop())
-        logger.info("WzlFavorability v6.2 (Cognitive Resonance Engine) Loaded")
+        logger.info("WzlFavorability v6.9 (Cognitive Resonance Engine) Loaded")
         
     def _validate_and_init_config(self):
         self.session_based = bool(self.config.get("session_based", False))
@@ -859,60 +859,84 @@ FORMAT:
         # [修复] 确保为字符串，并强力清洗多层嵌套的消息链 JSON 污染
         orig_text = resp.completion_text if isinstance(resp.completion_text, str) else str(resp.completion_text)
         
-        # [关键修复] 递归清洗嵌套的 [{'type': 'text', 'text': '...'}] 格式，最深支持5层嵌套
+        # [关键修复] 递归清洗嵌套的消息链格式，过滤 think 类型，提取 text 类型
         def clean_message_chain(text: str, depth: int = 0) -> str:
             if depth > 5:
                 return text
             
-            # 检测是否为消息链格式
-            if not (("[{'type': " in text or '[{"type": ' in text) and "'text': " in text):
+            # 检测是否为消息链格式（包含 type 字段的列表）
+            if not ("[{'type': " in text or '[{"type": ' in text) and not ("{'type': " in text or '{"type": ' in text):
                 return text
             
             try:
-                import json
                 import ast
                 
-                # 尝试安全解析 Python 字面量（比 JSON 更宽容单引号）
                 text_stripped = text.strip()
                 if text_stripped.startswith('[') and text_stripped.endswith(']'):
                     try:
                         parsed = ast.literal_eval(text_stripped)
                         if isinstance(parsed, list) and parsed:
-                            item = parsed[0]
-                            if isinstance(item, dict) and 'text' in item:
-                                inner_text = item['text']
-                                # 递归处理内层可能还有嵌套的情况
-                                return clean_message_chain(inner_text, depth + 1)
+                            # 过滤 think 类型，提取 text 类型
+                            text_parts = []
+                            for item in parsed:
+                                if isinstance(item, dict):
+                                    item_type = item.get('type', '')
+                                    if item_type == 'think':
+                                        # 直接跳过 think 类型，不提取其内容
+                                        continue
+                                    if 'text' in item:
+                                        text_parts.append(str(item['text']))
+                                    elif item_type == 'text' and 'text' in item:
+                                        text_parts.append(str(item['text']))
+                                    # 其他类型也尝试提取 text 字段
+                                    elif 'text' in item:
+                                        text_parts.append(str(item['text']))
+                            if text_parts:
+                                combined = '\n'.join(text_parts)
+                                return clean_message_chain(combined, depth + 1)
+                            else:
+                                # 所有项都是 think 或无 text 字段
+                                return ""
                     except (SyntaxError, ValueError):
                         pass
                 
-                # 备用：正则提取最内层的 text 字段
-                # 优先匹配最内层的单引号 text 值（非贪婪）
-                patterns = [
-                    r"'text':\s*'((?:\\.|[^'\\])*)'",  # 单引号包裹
-                    r'"text":\s*"((?:\\.|[^"\\])*)"',   # 双引号包裹
-                ]
-                
-                for pattern in patterns:
-                    matches = re.findall(pattern, text)
-                    if matches:
-                        # 取最后一个匹配（通常是最内层）
-                        inner = matches[-1]
-                        # 处理转义字符
-                        inner = inner.replace('\\\\n', '\n').replace('\\n', '\n')
-                        inner = inner.replace("\\'", "'").replace('\\"', '"')
-                        inner = inner.replace('\\\\', '\\')
-                        return clean_message_chain(inner, depth + 1)
+                # 单个 dict 情况（无外层列表）
+                if text_stripped.startswith('{') and text_stripped.endswith('}'):
+                    try:
+                        parsed = ast.literal_eval(text_stripped)
+                        if isinstance(parsed, dict):
+                            item_type = parsed.get('type', '')
+                            if item_type == 'think':
+                                return ""
+                            if 'text' in parsed:
+                                return clean_message_chain(str(parsed['text']), depth + 1)
+                    except (SyntaxError, ValueError):
+                        pass
                         
             except Exception as e:
                 logger.debug(f"[WzlFavorability] 清洗层级 {depth} 失败: {e}")
             
             return text
         
+        # 先使用正则直接剥离可能残留的 think 消息链字符串
+        # 匹配 [{'type': 'think', ...}] 或 [{"type": "think", ...}] 格式
+        think_chain_pattern = re.compile(
+            r"\[\s*\{[^}]*?['\"]type['\"]\s*:\s*['\"]think['\"][^}]*?\}\s*\]",
+            re.DOTALL
+        )
+        orig_text = think_chain_pattern.sub("", orig_text)
+        
         # 执行清洗，并统一处理换行符
         orig_text = clean_message_chain(orig_text)
         # 额外确保 \n 被正确解析（处理双重转义的情况）
         orig_text = orig_text.replace('\\\\n', '\n').replace('\\n', '\n')
+        
+        # 再次清理可能残留的 think 消息链
+        orig_text = think_chain_pattern.sub("", orig_text)
+        
+        # 清理可能残留的空列表 [] 或空 dict {}
+        orig_text = re.sub(r"\[\s*\]", "", orig_text)
+        orig_text = re.sub(r"\{\s*\}", "", orig_text)
         
         # [调试] 打印 LLM 的完整输出
         logger.info(f"[WzlFavorability DEBUG] LLM 完整输出:\n{orig_text}")
