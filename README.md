@@ -245,7 +245,17 @@ history_clean_pattern = r"(?:```(?:xml|text)?\s*)?<(?:thought|thinking)>[\s\S]*?
 
 ## 📅 版本历史 | Version History
 
-<details open> <summary><strong>🛠️ v6.9 - 思考信息彻底清除 (Current)</strong></summary>
+<details open> <summary><strong>🔧 v6.9.1 - thought 标签清洗架构重构 (Current)</strong></summary>
+
+三重无条件 thought 清除：将 `<thought>` / `<thinking>` 标签的移除逻辑从"条件性（依赖 show_thought 开关）"改为"始终移除"，彻底杜绝标签泄露。show_thought 开启时以受控格式 `【内心独白】` 重新附加。
+
+扩展正则覆盖面：thought_pattern 支持带属性标签（如 `<thought type="reasoning">`），新增 thought_unclosed_pattern 处理 LLM 只开不关的异常情况，新增 thought_strip_pattern 兜底清除所有残留裸标签。
+
+三轮清洗机制：原始文本层 → 消息链层 → 最终输出层，每一层都独立执行完整的 thought 清除，覆盖标签嵌套在 text 字段内、被 AST 包裹后结构变化等边缘场景。
+
+标签移除逻辑前移：将所有清洗正则定义和第一轮移除提前到函数开头，避免中间清洗步骤改变文本结构后正则失效。
+
+</details><details> <summary><strong>🛠️ v6.9 - 思考信息彻底清除</strong></summary>
 
 彻底解决 LLM 原生思考模式泄露问题：当模型输出原生 `[{'type': 'think', 'think': '...', 'encrypted': None}]` 格式的思考块时，不再原样透传至用户可见回复，而是自动过滤。
 

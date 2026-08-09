@@ -516,7 +516,7 @@ class AdminCommandHandler:
 
 # ==================== 主插件类 ====================
 
-@register("astrbot_plugin_wzl_favorability", "WZL", "高级好感度系统V6.9", "6.9")
+@register("astrbot_plugin_wzl_favorability", "WZL", "高级好感度系统V6.9.1", "6.9.1")
 class EmotionAIPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -547,7 +547,7 @@ class EmotionAIPlugin(Star):
         )
         
         self.auto_save_task = asyncio.create_task(self._auto_save_loop())
-        logger.info("WzlFavorability v6.9 (Cognitive Resonance Engine) Loaded")
+        logger.info("WzlFavorability v6.9.1 (Cognitive Resonance Engine) Loaded")
         
     def _validate_and_init_config(self):
         self.session_based = bool(self.config.get("session_based", False))
@@ -856,15 +856,46 @@ FORMAT:
         user_key = self._get_user_key(event)
         state = await self.user_manager.get_user_state(user_key)
         
-        # [修复] 确保为字符串，并强力清洗多层嵌套的消息链 JSON 污染
+        # ========== 提前定义所有清洗正则 ==========
+        
+        # thought 标签匹配：支持属性、反引号包裹、大小写
+        thought_pattern = re.compile(
+            r"(?:```(?:xml|text)?\s*)?<(?:thought|thinking)[^>]*>(.*?)</(?:thought|thinking)>(?:\s*```)?",
+            re.DOTALL | re.IGNORECASE
+        )
+        # 未闭合的 thought 标签（LLM 只开不关）
+        thought_unclosed_pattern = re.compile(
+            r"<(?:thought|thinking)[^>]*>[\s\S]*$",
+            re.IGNORECASE
+        )
+        # 残留裸标签清理（不管有没有闭合，都拆掉）
+        thought_strip_pattern = re.compile(
+            r"</?(?:thought|thinking)[^>]*>",
+            re.IGNORECASE
+        )
+        # think 消息链 [{'type': 'think', ...}]
+        think_chain_pattern = re.compile(
+            r"\[\s*\{[^}]*?['\"]type['\"]\s*:\s*['\"]think['\"][^}]*?\}\s*\]",
+            re.DOTALL
+        )
+        
+        # ========== 获取原始文本 ==========
         orig_text = resp.completion_text if isinstance(resp.completion_text, str) else str(resp.completion_text)
         
-        # [关键修复] 递归清洗嵌套的消息链格式，过滤 think 类型，提取 text 类型
+        # ========== 第一轮：原始文本层面移除 thought 标签（无条件） ==========
+        thought_match = thought_pattern.search(orig_text)
+        if thought_match:
+            orig_text = thought_pattern.sub("", orig_text)
+        # 处理未闭合标签
+        orig_text = thought_unclosed_pattern.sub("", orig_text)
+        # 清理残留裸标签
+        orig_text = thought_strip_pattern.sub("", orig_text)
+        
+        # ========== 清洗消息链格式 ==========
         def clean_message_chain(text: str, depth: int = 0) -> str:
             if depth > 5:
                 return text
             
-            # 检测是否为消息链格式（包含 type 字段的列表）
             if not ("[{'type': " in text or '[{"type": ' in text) and not ("{'type': " in text or '{"type": ' in text):
                 return text
             
@@ -876,37 +907,27 @@ FORMAT:
                     try:
                         parsed = ast.literal_eval(text_stripped)
                         if isinstance(parsed, list) and parsed:
-                            # 过滤 think 类型，提取 text 类型
                             text_parts = []
                             for item in parsed:
                                 if isinstance(item, dict):
                                     item_type = item.get('type', '')
                                     if item_type == 'think':
-                                        # 直接跳过 think 类型，不提取其内容
                                         continue
                                     if 'text' in item:
-                                        text_parts.append(str(item['text']))
-                                    elif item_type == 'text' and 'text' in item:
-                                        text_parts.append(str(item['text']))
-                                    # 其他类型也尝试提取 text 字段
-                                    elif 'text' in item:
                                         text_parts.append(str(item['text']))
                             if text_parts:
                                 combined = '\n'.join(text_parts)
                                 return clean_message_chain(combined, depth + 1)
                             else:
-                                # 所有项都是 think 或无 text 字段
                                 return ""
                     except (SyntaxError, ValueError):
                         pass
                 
-                # 单个 dict 情况（无外层列表）
                 if text_stripped.startswith('{') and text_stripped.endswith('}'):
                     try:
                         parsed = ast.literal_eval(text_stripped)
                         if isinstance(parsed, dict):
-                            item_type = parsed.get('type', '')
-                            if item_type == 'think':
+                            if parsed.get('type', '') == 'think':
                                 return ""
                             if 'text' in parsed:
                                 return clean_message_chain(str(parsed['text']), depth + 1)
@@ -918,50 +939,46 @@ FORMAT:
             
             return text
         
-        # 先使用正则直接剥离可能残留的 think 消息链字符串
-        # 匹配 [{'type': 'think', ...}] 或 [{"type": "think", ...}] 格式
-        think_chain_pattern = re.compile(
-            r"\[\s*\{[^}]*?['\"]type['\"]\s*:\s*['\"]think['\"][^}]*?\}\s*\]",
-            re.DOTALL
-        )
+        # 移除 think 消息链
         orig_text = think_chain_pattern.sub("", orig_text)
-        
-        # 执行清洗，并统一处理换行符
+        # 清洗消息链结构
         orig_text = clean_message_chain(orig_text)
-        # 额外确保 \n 被正确解析（处理双重转义的情况）
+        # 处理转义换行
         orig_text = orig_text.replace('\\\\n', '\n').replace('\\n', '\n')
-        
-        # 再次清理可能残留的 think 消息链
+        # 再次清理残留
         orig_text = think_chain_pattern.sub("", orig_text)
-        
-        # 清理可能残留的空列表 [] 或空 dict {}
+        # 清理空壳
         orig_text = re.sub(r"\[\s*\]", "", orig_text)
         orig_text = re.sub(r"\{\s*\}", "", orig_text)
+        
+        # ========== 第二轮：清洗后再次移除 thought 标签（覆盖嵌套在 text 字段中的情况） ==========
+        thought_match2 = thought_pattern.search(orig_text)
+        if thought_match2 and not thought_match:
+            thought_match = thought_match2
+        if thought_match2:
+            orig_text = thought_pattern.sub("", orig_text)
+        orig_text = thought_unclosed_pattern.sub("", orig_text)
+        orig_text = thought_strip_pattern.sub("", orig_text)
         
         # [调试] 打印 LLM 的完整输出
         logger.info(f"[WzlFavorability DEBUG] LLM 完整输出:\n{orig_text}")
         
-        # 1. 提取思维链
-        thought_pattern = re.compile(r"(?:```(?:xml|text)?\s*)?<(?:thought|thinking)>(.*?)</(?:thought|thinking)>(?:\s*```)?", re.DOTALL | re.IGNORECASE)
-        thought_match = thought_pattern.search(orig_text)
-        
+        # ========== 提取思维链内容用于情感更新（不管是否显示） ==========
         updates = {}
+        thought_content = None
         
         if thought_match:
             thought_content = thought_match.group(1)
             logger.info(f"[WzlFavorability DEBUG] 提取到的思维链内容:\n{thought_content}")
             
-            # 扫描每一行
             lines = thought_content.split('\n')
             for i, line in enumerate(lines):
                 line = line.strip()
                 if not line: continue
                 
-                # [关键逻辑] 只有包含 "更新" 或 "Update" 的行才会被处理
                 if "更新" in line or "Update" in line:
                     logger.info(f"[WzlFavorability DEBUG] >>> 命中更新行 [Line {i}]: {line}")
                     
-                    # 在这一行里抓取数值
                     matches = self.single_emotion_pattern.findall(line)
                     logger.info(f"[WzlFavorability DEBUG]     正则抓取结果: {matches}")
                     
@@ -971,32 +988,30 @@ FORMAT:
                             if k in self.CN_TO_EN_MAP: k = self.CN_TO_EN_MAP[k]
                             updates[k] = int(v)
                         except ValueError: continue
-                else:
-                    # 打印被跳过的行，用于确认是否误判
-                    # logger.debug(f"[WzlFavorability DEBUG] 跳过非更新行: {line[:20]}...")
-                    pass
         
-        # 如果思维链里没找到更新（或者没有思维链），尝试从旧格式中查找
+        # 如果思维链里没找到更新，尝试全文扫描（旧兼容模式）
         if not updates:
             logger.warning("[WzlFavorability DEBUG] 思维链中未找到更新，尝试全文扫描(旧兼容模式)...")
             matches = self.single_emotion_pattern.findall(orig_text)
-            # 这里要注意：全文扫描极易误读（比如读到面板里的数值），所以仅作为最后的保底
-            # 如果你不想让它读面板，可以把这块代码删掉，或者加上更严格的限制
             for k, v in matches:
-                # 简单过滤：只接受带 + 或 - 的数值，或者在 "更新" 附近的数值
-                # 但旧兼容模式很难完美，建议尽量依赖上面的思维链逻辑
                  try:
                     k = k.lower()
                     if k in self.CN_TO_EN_MAP: k = self.CN_TO_EN_MAP[k]
                     updates[k] = int(v)
                  except ValueError: continue
 
-        # 移除思维链文本
-        if not state.show_thought:
-            orig_text = thought_pattern.sub("", orig_text)
+        # ========== 第三轮：最终兜底清理（无条件移除所有 thought 痕迹） ==========
+        orig_text = thought_pattern.sub("", orig_text)
+        orig_text = thought_unclosed_pattern.sub("", orig_text)
+        orig_text = thought_strip_pattern.sub("", orig_text)
         
-        # 确保只设置纯文本内容，避免添加其他格式
+        # ========== 设置最终文本 ==========
         resp.completion_text = orig_text.strip()
+        
+        # 如果用户开启了心理显示，以受控格式重新附加 thought 内容
+        if state.show_thought and thought_content:
+            thought_display = f"\n\n【内心独白】\n{thought_content.strip()}"
+            resp.completion_text = resp.completion_text + thought_display
         
         if updates:
             logger.info(f"[WzlFavorability] 最终捕获的情感变更: {updates}")
@@ -1008,10 +1023,8 @@ FORMAT:
             logger.info("[WzlFavorability] 本次无情感变更。")
         
         if state.show_status and updates:
-            # 修改状态信息的添加方式，确保不会产生多余的格式化字符
             user_id = event.get_sender_id()
             status_info = f"\n\n{self._format_emotional_state(state, user_id)}"
-            # 确保 _format_emotional_state 返回的是纯文本
             resp.completion_text = resp.completion_text.rstrip() + status_info
 
 
