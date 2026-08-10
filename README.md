@@ -245,7 +245,15 @@ history_clean_pattern = r"(?:```(?:xml|text)?\s*)?<(?:thought|thinking)>[\s\S]*?
 
 ## 📅 版本历史 | Version History
 
-<details open> <summary><strong>🩹 v6.9.2 - thought/think 双格式兼容修复 (Current)</strong></summary>
+<details open> <summary><strong>🚑 v6.9.3 - Agent 工具循环中间消息拦截 (Current)</strong></summary>
+
+新增 `@filter.on_decorating_result()` 钩子：之前所有清洗逻辑都在 `on_llm_response` 中，但该钩子只在 Agent 全部工具调用完成后的**最终响应**触发。在 Agent 工具循环场景中（如 shell 执行、工具调用），框架会通过 `respond.stage` 直接发送**中间消息**（包含 `<thought>` 标签），完全绕过插件清洗逻辑。
+
+拦截时机前移：`on_decorating_result` 在每条消息发送给消息平台之前触发，能修改 `event.get_result().chain` 中的消息链，覆盖所有消息场景——包括 Agent 工具循环的中间回复。
+
+消息链组件级清洗：遍历消息链中的每个组件，对 `Plain` 等文本组件的 `.text` / `.content` 属性执行 thought 标签和 think 消息链清洗，确保不会因结构化消息格式而漏掉。
+
+</details><details> <summary><strong>🩹 v6.9.2 - thought/think 双格式兼容修复</strong></summary>
 
 正则根本修复：将 `think_chain_pattern` 中错误的 `think(?:ought)?` 改为 `think|thought`。前者因 `think`(t-h-i-n-k) 与 `thought`(t-h-o-u-g-h-t) 并非前缀关系而永远无法匹配 `thought`，导致 `[{'type': 'thought', 'content': '...'}]` 格式的思考块全部泄露。
 

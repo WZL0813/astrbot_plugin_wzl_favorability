@@ -21,6 +21,12 @@ from astrbot.api.star import StarTools
 # 4. LLM 相关
 from astrbot.api.provider import LLMResponse, ProviderRequest
 
+# 5. 消息组件（用于 on_decorating_result 钩子中的消息链清洗）
+try:
+    import astrbot.api.message_components as Comp
+except ImportError:
+    Comp = None
+
 
 # ==================== 数据结构定义 ====================
 
@@ -516,7 +522,7 @@ class AdminCommandHandler:
 
 # ==================== 主插件类 ====================
 
-@register("astrbot_plugin_wzl_favorability", "WZL", "高级好感度系统V6.9.2", "6.9.2")
+@register("astrbot_plugin_wzl_favorability", "WZL", "高级好感度系统V6.9.3", "6.9.3")
 class EmotionAIPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -547,7 +553,7 @@ class EmotionAIPlugin(Star):
         )
         
         self.auto_save_task = asyncio.create_task(self._auto_save_loop())
-        logger.info("WzlFavorability v6.9.2 (Cognitive Resonance Engine) Loaded")
+        logger.info("WzlFavorability v6.9.3 (Cognitive Resonance Engine) Loaded")
         
     def _validate_and_init_config(self):
         self.session_based = bool(self.config.get("session_based", False))
@@ -850,6 +856,82 @@ FORMAT:
 可用维度：joy, trust, fear, surprise, sadness, disgust, anger, anticipation, pride, guilt, shame, envy, favor, intimacy
 情感变化范围：{self.change_min} ~ {self.change_max}
 """
+
+    # ========== [关键] 发送消息前拦截，清洗 Agent 工具循环中间消息中的 thought 标签 ==========
+    # on_llm_response 只在最终响应触发，但 Agent 工具循环会在 respond.stage 先发中间消息
+    # on_decorating_result 在每次消息发送前触发，能覆盖所有场景
+    @event_filter.on_decorating_result(priority=100000)
+    async def strip_thought_before_send(self, event: AstrMessageEvent):
+        try:
+            result = event.get_result()
+            if result is None or not hasattr(result, 'chain'):
+                return
+            
+            chain = result.chain
+            if not chain:
+                return
+            
+            # thought 相关正则（与 process_emotional_update 保持一致）
+            thought_pattern = re.compile(
+                r"(?:```(?:xml|text)?\s*)?<(?:thought|thinking)[^>]*>(.*?)</(?:thought|thinking)>(?:\s*```)?",
+                re.DOTALL | re.IGNORECASE
+            )
+            thought_unclosed_pattern = re.compile(
+                r"<(?:thought|thinking)[^>]*>[\s\S]*$",
+                re.IGNORECASE
+            )
+            thought_strip_pattern = re.compile(
+                r"</?(?:thought|thinking)[^>]*>",
+                re.IGNORECASE
+            )
+            think_chain_pattern = re.compile(
+                r"\[\s*\{[^}]*?['\"]type['\"]\s*:\s*['\"](?:think|thought)['\"][^}]*?\}\s*\]",
+                re.DOTALL
+            )
+            
+            cleaned_any = False
+            new_chain = []
+            
+            for comp in chain:
+                comp_text = None
+                if hasattr(comp, 'text'):
+                    comp_text = comp.text
+                elif hasattr(comp, 'content'):
+                    comp_text = comp.content
+                
+                if comp_text is None or not isinstance(comp_text, str):
+                    new_chain.append(comp)
+                    continue
+                
+                original = comp_text
+                text = comp_text
+                
+                # 三重 thought 标签移除
+                text = thought_pattern.sub("", text)
+                text = thought_unclosed_pattern.sub("", text)
+                text = thought_strip_pattern.sub("", text)
+                # think 消息链移除
+                text = think_chain_pattern.sub("", text)
+                # 清理空壳
+                text = re.sub(r"\[\s*\]", "", text)
+                text = re.sub(r"\{\s*\}", "", text)
+                
+                if text != original:
+                    cleaned_any = True
+                    text = text.strip()
+                    if hasattr(comp, 'text'):
+                        comp.text = text
+                    elif hasattr(comp, 'content'):
+                        comp.content = text
+                
+                new_chain.append(comp)
+            
+            if cleaned_any:
+                result.chain = new_chain
+                logger.info("[WzlFavorability] on_decorating_result: 已清洗 thought/think 标签")
+        
+        except Exception as e:
+            logger.debug(f"[WzlFavorability] on_decorating_result 处理失败: {e}")
 
     @event_filter.on_llm_response(priority=100000)
     async def process_emotional_update(self, event: AstrMessageEvent, resp: LLMResponse, *args, **kwargs):
