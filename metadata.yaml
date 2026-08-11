@@ -1,7 +1,7 @@
 name: astrbot_plugin_wzl_favorability
-version: v6.9.3
+version: v7.0.1
 author: WZL
-desc: WzlFavorability v6.9.3 搭载了全新的"认知共鸣引擎" (Cognitive Resonance Engine)。利用思维链 (CoT) 技术，让 AI 在回复前进行拟人化的心理活动推理，实现真正的情感代谢与自主决策。
+desc: WzlFavorability v7.0.1 搭载了全新的"认知共鸣引擎" (Cognitive Resonance Engine)。利用思维链 (CoT) 技术，让 AI 在回复前进行拟人化的心理活动推理，实现真正的情感代谢与自主决策。
 repo: https://github.com/WZL0813/astrbot_plugin_wzl_favorability/
 help: |
   可用命令:

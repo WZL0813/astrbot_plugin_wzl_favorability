@@ -245,7 +245,17 @@ history_clean_pattern = r"(?:```(?:xml|text)?\s*)?<(?:thought|thinking)>[\s\S]*?
 
 ## 📅 版本历史 | Version History
 
-<details open> <summary><strong>🚑 v6.9.3 - Agent 工具循环中间消息拦截 (Current)</strong></summary>
+<details open> <summary><strong>🎯 v7.0.1 - 思考清洗架构全面升级 (Current)</strong></summary>
+
+重大版本升级：从 v6.x 跨至 v7.0.0，历经 4 次迭代修复了 thought/think 信息泄露的全部场景。
+
+三重拦截体系：`on_llm_response` 最终响应清洗 + `on_decorating_result` 消息发送前拦截 + 消息链组件级清洗，覆盖 Agent 工具循环中间消息、原生 think 消息链、嵌套 thought 标签等全部泄露路径。
+
+扩展正则覆盖面：支持 `<thought>` / `<thinking>` / `<THOUGHT>` 大小写变体、带属性标签、未闭合标签、`[{'type': 'thought', 'content': '...'}]` 与 `[{'type': 'think', 'think': '...'}]` 两种原生格式。
+
+Prompt 措辞本地化：伪造自检消息从"系统自检"改为"若琳心理自检"，让 LLM 输出更符合角色设定。
+
+</details><details> <summary><strong>🚑 v6.9.3 - Agent 工具循环中间消息拦截</strong></summary>
 
 新增 `@filter.on_decorating_result()` 钩子：之前所有清洗逻辑都在 `on_llm_response` 中，但该钩子只在 Agent 全部工具调用完成后的**最终响应**触发。在 Agent 工具循环场景中（如 shell 执行、工具调用），框架会通过 `respond.stage` 直接发送**中间消息**（包含 `<thought>` 标签），完全绕过插件清洗逻辑。
 

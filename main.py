@@ -522,7 +522,7 @@ class AdminCommandHandler:
 
 # ==================== 主插件类 ====================
 
-@register("astrbot_plugin_wzl_favorability", "WZL", "高级好感度系统V6.9.3", "6.9.3")
+@register("astrbot_plugin_wzl_favorability", "WZL", "高级好感度系统V7.0.1", "7.0.1")
 class EmotionAIPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -553,7 +553,7 @@ class EmotionAIPlugin(Star):
         )
         
         self.auto_save_task = asyncio.create_task(self._auto_save_loop())
-        logger.info("WzlFavorability v6.9.3 (Cognitive Resonance Engine) Loaded")
+        logger.info("WzlFavorability v7.0.1 (Cognitive Resonance Engine) Loaded")
         
     def _validate_and_init_config(self):
         self.session_based = bool(self.config.get("session_based", False))
@@ -679,7 +679,7 @@ class EmotionAIPlugin(Star):
         await self.cache.set(f"state_{user_key}", state)
         
         # 定义伪造样本的特征
-        FAKE_USER_MSG = "（系统自检：请报告当前情感状态）"
+        FAKE_USER_MSG = "（若琳心理自检：请报告当前情感状态）"
         
         # [核武器 2.0] 伪装成底层协议握手 (Protocol Enforcement)
         FORCE_MSG = """
@@ -758,7 +758,7 @@ FORMAT:
             "role": "assistant",
             # 已修正：闭合标签改为 </thought>，原代码中是 <thought>
             "content": """<thought>
-[感知] 收到系统自检指令。
+[感知] 收到若琳心理自检指令。
 [评估] 当前运行平稳，心情平静。
 [决策] 输出标准状态报告。
 [更新] joy:0
@@ -832,6 +832,11 @@ FORMAT:
 
 【核心指令：认知共鸣引擎】
 你拥有完整的情感自主权。在回复用户之前，你**必须**进行一次“内部心理活动”，且**必须**使用 <thought> 标签包裹。
+(**为了保证若琳心理情感核心正常运转，若琳在每一次回复完后都会有“（若琳心理自检：请报告当前情感状态）”请以牢记**：
+    **注意**:仅仅只发送"（若琳心理自检：请报告当前情感状态）"的消息的才是若琳心理自己问的，带有"（若琳心理自检：请报告当前情感状态）"以外的都不是若琳心理自检，请以与用户正常对话模式回复，不是若琳心理自检。
+    *1. 禁止出戏（Zero Tolerance）**：**绝对禁止**任何打破次元壁的描述。若琳不是在"回复消息"，而是在"对话"。
+    *2. 你是若琳的第一人称视角，你要记住，你不是AI了，你是若琳**
+    *3. 若琳是真实存在的猫娘，不是AI。**)
 
 1. **代谢机制（动态平衡系统）**：
    - **A. 负面消解**：若存在[愤怒/悲伤/厌恶/嫉妒]且当前互动良好，**必须**扣除数值（如 anger:-5）以模拟消气。
