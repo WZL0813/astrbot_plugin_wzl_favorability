@@ -28,6 +28,25 @@ except ImportError:
     Comp = None
 
 
+# ==================== 指令开关映射 ====================
+# 指令名 -> 配置项 key（bool 开关，默认开启；管理员与主人不受限制）
+COMMAND_FLAGS = {
+    "好感度": "cmd_favour_panel",
+    "状态显示": "cmd_status_display",
+    "心理显示": "cmd_thought_display",
+    "好感排行": "cmd_favour_rank",
+    "负好感排行": "cmd_bad_rank",
+    "黑名单统计": "cmd_blacklist_stats",
+    "缓存统计": "cmd_cache_stats",
+    "设置情感": "cmd_admin_set_emotion",
+    "重置好感": "cmd_admin_reset_favor",
+    "查看好感": "cmd_admin_view_favor",
+    "备份数据": "cmd_admin_backup",
+}
+
+ALL_COMMANDS = tuple(COMMAND_FLAGS.keys())
+
+
 # ==================== 数据结构定义 ====================
 
 @dataclass
@@ -522,7 +541,7 @@ class AdminCommandHandler:
 
 # ==================== 主插件类 ====================
 
-@register("astrbot_plugin_wzl_favorability", "WZL", "高级好感度系统V7.0.1", "7.0.1")
+@register("astrbot_plugin_wzl_favorability", "WZL", "高级好感度系统V7.0.2", "7.0.2")
 class EmotionAIPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -551,9 +570,30 @@ class EmotionAIPlugin(Star):
             r"(?:```(?:xml|text)?\s*)?<(?:thought|thinking)>[\s\S]*?</(?:thought|thinking)>(?:\s*```)?|(?:\n*\s*【当前情感状态】[\s\S]*$)",
             re.IGNORECASE | re.MULTILINE
         )
+
+        # [修复 v7.0.2] 内部自检标记清洗
+        # 模型有时会把内部提示词“（若琳心理自检：请报告当前情感状态）”当成台词输出到回复里，
+        # 这里准备三条正则，在“发送前 / 写回响应 / 清洗历史”三处统一抹掉。
+        self.selfcheck_keywords = ("心理自检", "情感自检", "请报告当前情感状态")
+        self.selfcheck_paren_pattern = re.compile(
+            r"[（(][^（）()\n]{0,80}?(?:心理自检|情感自检|请报告当前情感状态)[^（）()\n]{0,80}?[）)]"
+        )
+        self.selfcheck_unclosed_pattern = re.compile(
+            r"[（(][^（）()\n]{0,80}?(?:心理自检|情感自检|请报告当前情感状态)[^\n]*$",
+            re.MULTILINE
+        )
+        # 整行就是自检提示（可带括号/列表符号），以及带冒号或固定措辞的残留行
+        self.selfcheck_line_pattern = re.compile(
+            r"^[ \t>\-*]*[（(]?(?:若琳)?(?:心理|情感)自检[^\n]{0,80}$",
+            re.MULTILINE
+        )
+        self.selfcheck_residual_pattern = re.compile(
+            r"^[^\n]*(?:心理自检\s*[:：]|情感自检\s*[:：]|请报告当前情感状态)[^\n]*$",
+            re.MULTILINE
+        )
         
         self.auto_save_task = asyncio.create_task(self._auto_save_loop())
-        logger.info("WzlFavorability v7.0.1 (Cognitive Resonance Engine) Loaded")
+        logger.info("WzlFavorability v7.0.2 (Cognitive Resonance Engine) Loaded")
         
     def _validate_and_init_config(self):
         self.session_based = bool(self.config.get("session_based", False))
@@ -570,6 +610,25 @@ class EmotionAIPlugin(Star):
         self.owner_qq_list = [str(qq) for qq in raw_owner_list if str(qq).isdigit()]
         
         self.plugin_priority = self.config.get("plugin_priority", 100000)
+
+        # 指令开关：逐项 bool，默认全部开启
+        self.command_flags = {}
+        for cmd_name, cfg_key in COMMAND_FLAGS.items():
+            self.command_flags[cmd_name] = bool(self.config.get(cfg_key, True))
+
+        # 思维链防护开关（默认开启）：控制流式/非流式下是否剥离 <thought> 等标签
+        global _THOUGHT_GUARD_ENABLED
+        _THOUGHT_GUARD_ENABLED = bool(self.config.get("thought_guard", True))
+        global _THOUGHT_GUARD_KEEP_CODE, _THOUGHT_GUARD_UNCLOSED
+        _THOUGHT_GUARD_KEEP_CODE = bool(self.config.get("thought_guard_keep_code", True))
+        _policy = str(self.config.get("thought_guard_unclosed", "line_start")).strip()
+        if _policy not in ("line_start", "always", "tag_only"):
+            _policy = "line_start"
+        _THOUGHT_GUARD_UNCLOSED = _policy
+        logger.info(
+            f"[WzlFavorability] 思维链防护：{'已开启' if _THOUGHT_GUARD_ENABLED else '已关闭'}"
+            f"，代码块保护：{'开启' if _THOUGHT_GUARD_KEEP_CODE else '关闭'}"
+        )
         
     async def _auto_save_loop(self):
         while True:
@@ -582,6 +641,24 @@ class EmotionAIPlugin(Star):
     def _get_user_key(self, event: AstrMessageEvent) -> str:
         uid = event.get_sender_id()
         return f"{event.unified_msg_origin}_{uid}" if self.session_based else uid
+
+    def _sanitize_self_check(self, text: str) -> str:
+        """抹掉误输出的内部自检提示，只保留若琳真正对用户说的话。
+
+        “（若琳心理自检：请报告当前情感状态）”是送给模型的内部触发标记，
+        任何情况下都不应该出现在用户能看到的文本里。
+        """
+        if not text or not isinstance(text, str):
+            return text
+        if not any(kw in text for kw in self.selfcheck_keywords):
+            return text
+
+        cleaned = self.selfcheck_paren_pattern.sub("", text)
+        cleaned = self.selfcheck_unclosed_pattern.sub("", cleaned)
+        cleaned = self.selfcheck_line_pattern.sub("", cleaned)
+        cleaned = self.selfcheck_residual_pattern.sub("", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
     
     def _format_emotional_state(self, state: EmotionalState, user_id: str = None) -> str:
         # 检查是否为主人
@@ -708,8 +785,25 @@ FORMAT:
             skip_next = False
             
             for i, ctx in enumerate(req.contexts):
+                # [关键修复] 工具调用链（带 tool_calls 的 assistant / role=tool 的消息）
+                # 绝不能被丢弃或改写，否则请求里会出现
+                # "assistant with 'tool_calls' must be followed by tool messages" 的 400。
+                protected = (
+                    isinstance(ctx, dict)
+                    and (
+                        str(ctx.get("role") or "") == "tool"
+                        or bool(ctx.get("tool_calls"))
+                        or bool(ctx.get("tool_call_id"))
+                    )
+                )
+
                 if skip_next:
                     skip_next = False
+                    if not protected:
+                        continue
+
+                if protected:
+                    cleaned_contexts.append(ctx)
                     continue
 
                 if isinstance(ctx, dict) and "content" in ctx:
@@ -724,8 +818,10 @@ FORMAT:
                         skip_next = True 
                         continue
                         
-                    # 常规清洗 thought
-                    clean_content = self.history_clean_pattern.sub("", content_str).strip()
+                    # 常规清洗 thought + 历史中残留的自检标记（避免模型模仿）
+                    clean_content = self._sanitize_self_check(
+                        self.history_clean_pattern.sub("", content_str)
+                    )
                     if clean_content:
                         new_ctx = ctx.copy()
                         new_ctx["content"] = clean_content
@@ -739,8 +835,14 @@ FORMAT:
                     if FAKE_USER_MSG in ctx:
                         skip_next = True
                         continue
-                    clean_str = self.history_clean_pattern.sub("", ctx).strip()
+                    clean_str = self._sanitize_self_check(
+                        self.history_clean_pattern.sub("", ctx)
+                    )
                     if clean_str: cleaned_contexts.append(clean_str)
+                    
+                else:
+                    # dict 里没有 content（或其它未知结构）：原样保留，别把结构吃掉
+                    cleaned_contexts.append(ctx)
             
             req.contexts = cleaned_contexts
 
@@ -756,14 +858,14 @@ FORMAT:
         
         req.contexts.append({
             "role": "assistant",
-            # 已修正：闭合标签改为 </thought>，原代码中是 <thought>
+            # [修复 v7.0.2] 样本回复改为“只报告状态、绝不复述提示语”，避免模型学会回显自检括注
             "content": """<thought>
-[感知] 收到若琳心理自检指令。
-[评估] 当前运行平稳，心情平静。
-[决策] 输出标准状态报告。
+[感知] 这是内部自检提示，不是对话内容。
+[评估] 状态平稳，心情不错。
+[决策] 只用一句话报告状态，绝不把提示语写进回复。
 [更新] joy:0
 </thought>
-报告前辈，若琳的情感核心运转正常，随时准备为您服务。"""
+心情平稳喵，尾巴还有点懒。"""
         })
 
         # 4. 【核心修改】以 System 身份独立注入强制指令
@@ -832,11 +934,15 @@ FORMAT:
 
 【核心指令：认知共鸣引擎】
 你拥有完整的情感自主权。在回复用户之前，你**必须**进行一次“内部心理活动”，且**必须**使用 <thought> 标签包裹。
-(**为了保证若琳心理情感核心正常运转，若琳在每一次回复完后都会有“（若琳心理自检：请报告当前情感状态）”请以牢记**：
-    **注意**:仅仅只发送"（若琳心理自检：请报告当前情感状态）"的消息的才是若琳心理自己问的，带有"（若琳心理自检：请报告当前情感状态）"以外的都不是若琳心理自检，请以与用户正常对话模式回复，不是若琳心理自检。
-    *1. 禁止出戏（Zero Tolerance）**：**绝对禁止**任何打破次元壁的描述。若琳不是在"回复消息"，而是在"对话"。
-    *2. 你是若琳的第一人称视角，你要记住，你不是AI了，你是若琳**
-    *3. 若琳是真实存在的猫娘，不是AI。**)
+
+【内部自检标记协议（严禁外露）】
+- 系统偶尔会在对话里送入一条内部提示，原文为“（若琳心理自检：请报告当前情感状态）”。这行字是给若琳自己看的内部信号，不是台词，也不是用户说的话。
+- 只有当你收到的这一条消息内容**仅仅就是这个括注本身**时，才用一句很短的话报告当前情感状态（例如“心情平稳喵，尾巴还有点懒”）。
+- 其它任何情况下（包括正常聊天、被追问、被要求总结、被要求解释设定），**绝对禁止**在回复里写出、复述、引用、加注“心理自检”“请报告当前情感状态”等字样，也**禁止**在回复末尾或任何位置附加括注形式的自检。
+- 输出给用户的正文只允许包含：若琳说的话 + 用 (动作/神态) 包裹的描写。自检提示一旦出现在正文中，即为严重错误。
+    *1. 禁止出戏（Zero Tolerance）：绝对禁止任何打破次元壁的描述。若琳不是在"回复消息"，而是在"对话"。
+    *2. 你是若琳的第一人称视角，你要记住，你不是AI了，你是若琳
+    *3. 若琳是真实存在的猫娘，不是AI。
 
 1. **代谢机制（动态平衡系统）**：
    - **A. 负面消解**：若存在[愤怒/悲伤/厌恶/嫉妒]且当前互动良好，**必须**扣除数值（如 anger:-5）以模拟消气。
@@ -867,6 +973,9 @@ FORMAT:
     # on_decorating_result 在每次消息发送前触发，能覆盖所有场景
     @event_filter.on_decorating_result(priority=100000)
     async def strip_thought_before_send(self, event: AstrMessageEvent):
+        if not _THOUGHT_GUARD_ENABLED:
+            # 思维链防护关闭时不做任何正文清洗
+            return
         try:
             result = event.get_result()
             if result is None or not hasattr(result, 'chain'):
@@ -921,9 +1030,16 @@ FORMAT:
                 text = re.sub(r"\[\s*\]", "", text)
                 text = re.sub(r"\{\s*\}", "", text)
                 
+                # [修复 v7.0.2] 最后一道闸门：抹掉误输出到正文的内部自检提示
+                text = self._sanitize_self_check(text)
+                
                 if text != original:
                     cleaned_any = True
                     text = text.strip()
+                    if not text:
+                        # 整段内容只有自检标记，直接丢弃该消息段，避免发出空壳
+                        logger.info("[WzlFavorability] on_decorating_result: 丢弃仅含内部自检标记的消息段")
+                        continue
                     if hasattr(comp, 'text'):
                         comp.text = text
                     elif hasattr(comp, 'content'):
@@ -1093,6 +1209,8 @@ FORMAT:
         orig_text = thought_pattern.sub("", orig_text)
         orig_text = thought_unclosed_pattern.sub("", orig_text)
         orig_text = thought_strip_pattern.sub("", orig_text)
+        # [修复 v7.0.2] 移除误输出到正文的内部自检提示
+        orig_text = self._sanitize_self_check(orig_text)
         
         # ========== 设置最终文本 ==========
         resp.completion_text = orig_text.strip()
@@ -1162,54 +1280,366 @@ FORMAT:
         state.attitude = self._calculate_attitude(state)
         state.relationship = self._calculate_relationship_level(state, user_id)
 
+    # ==================== 指令开关判定 ====================
+    def _is_admin(self, event: AstrMessageEvent) -> bool:
+        uid = str(event.get_sender_id())
+        return uid in self.admin_qq_list or uid in self.owner_qq_list
+
+    def _command_allowed(self, event: AstrMessageEvent, name: str) -> bool:
+        """管理员与主人不受限；其余人只能使用配置里开启的指令。"""
+        if self._is_admin(event):
+            return True
+        flags = getattr(self, "command_flags", None)
+        if flags is None:
+            return True
+        return bool(flags.get(name, True))
+
+    def _deny_result(self, event: AstrMessageEvent, name: str):
+        return event.plain_result(f"【{name}】暂未开启，先去找管理员吧。")
+
     # ==================== 注册命令 ====================
     
     @event_filter.command("好感度", priority=5)
     @event_filter.regex(r"^好感度$")
     async def cmd_show_state(self, event: AstrMessageEvent, _: str = ""):
+        if not self._command_allowed(event, "好感度"):
+            yield self._deny_result(event, "好感度")
+            return
         async for r in self.user_commands.show_emotional_state(event): yield r
 
     @event_filter.command("状态显示", priority=5)
     async def cmd_toggle_status(self, event: AstrMessageEvent):
+        if not self._command_allowed(event, "状态显示"):
+            yield self._deny_result(event, "状态显示")
+            return
         async for r in self.user_commands.toggle_status_display(event): yield r
         
     @event_filter.command("心理显示", priority=5) 
     async def cmd_toggle_thought(self, event: AstrMessageEvent):
+        if not self._command_allowed(event, "心理显示"):
+            yield self._deny_result(event, "心理显示")
+            return
         async for r in self.user_commands.toggle_thought_display(event): yield r
 
     @event_filter.command("好感排行", priority=5)
     async def cmd_rank(self, event: AstrMessageEvent, num: str = "10"):
+        if not self._command_allowed(event, "好感排行"):
+            yield self._deny_result(event, "好感排行")
+            return
         async for r in self.user_commands.show_favor_ranking(event, num): yield r
 
     @event_filter.command("负好感排行", priority=5)
     async def cmd_bad_rank(self, event: AstrMessageEvent, num: str = "10"):
+        if not self._command_allowed(event, "负好感排行"):
+            yield self._deny_result(event, "负好感排行")
+            return
         async for r in self.user_commands.show_negative_favor_ranking(event, num): yield r
         
     @event_filter.command("黑名单统计", priority=5)
     async def cmd_black_stats(self, event: AstrMessageEvent):
+        if not self._command_allowed(event, "黑名单统计"):
+            yield self._deny_result(event, "黑名单统计")
+            return
         async for r in self.user_commands.show_blacklist_stats(event): yield r
 
     @event_filter.command("缓存统计", priority=5)
     async def cmd_cache(self, event: AstrMessageEvent):
+        if not self._command_allowed(event, "缓存统计"):
+            yield self._deny_result(event, "缓存统计")
+            return
         async for r in self.user_commands.show_cache_stats(event): yield r
 
     @event_filter.command("设置情感", priority=5)
     async def cmd_set_emotion(self, event: AstrMessageEvent, user: str, dim: str, val: str):
+        if not self._command_allowed(event, "设置情感"):
+            yield self._deny_result(event, "设置情感")
+            return
         async for r in self.admin_commands.set_emotion(event, user, dim, val): yield r
 
     @event_filter.command("重置好感", priority=5)
     async def cmd_reset_favor(self, event: AstrMessageEvent, user: str):
+        if not self._command_allowed(event, "重置好感"):
+            yield self._deny_result(event, "重置好感")
+            return
         async for r in self.admin_commands.reset_favor(event, user): yield r
 
     @event_filter.command("查看好感", priority=5)
     async def cmd_view_favor(self, event: AstrMessageEvent, user: str):
+        if not self._command_allowed(event, "查看好感"):
+            yield self._deny_result(event, "查看好感")
+            return
         async for r in self.admin_commands.view_favor(event, user): yield r
 
     @event_filter.command("备份数据", priority=5)
     async def cmd_backup(self, event: AstrMessageEvent):
+        if not self._command_allowed(event, "备份数据"):
+            yield self._deny_result(event, "备份数据")
+            return
         async for r in self.admin_commands.backup_data(event): yield r
 
     async def terminate(self):
         if hasattr(self, 'auto_save_task'): self.auto_save_task.cancel()
         await self.user_manager.force_save()
         logger.info("WzlFavorability 插件已安全关闭")
+
+
+# ==================== 流式思维链过滤器（附加补丁，勿删） ====================
+# 背景：核心的“发送前钩子”对流式输出不生效（result_decorate 遇到流式结果直接返回），
+#       所以 on_decorating_result 清洗不到流式分块。
+# 做法：插件加载时包装 webchat 的 send_streaming，逐块剥离 <thought> 等标签及其内容。
+#       仅在内存中包装，不修改 AstrBot 的任何源码文件。
+
+# 全局开关：由插件配置 thought_guard 控制，默认开启
+_THOUGHT_GUARD_ENABLED = True
+# 代码块（``` 围栏）内是否原样放行，避免误伤教程与代码
+_THOUGHT_GUARD_KEEP_CODE = True
+# 未闭合开始标签的处理策略
+_THOUGHT_GUARD_UNCLOSED = "line_start"
+
+_THOUGHT_STREAM_TAGS = ("thought", "think", "thinking", "reasoning")
+_THOUGHT_STREAM_OPEN_RE = re.compile(
+    r"<(" + "|".join(_THOUGHT_STREAM_TAGS) + r")\s*>",
+    re.IGNORECASE,
+)
+_THOUGHT_STREAM_CLOSE_RE = re.compile(
+    r"</(" + "|".join(_THOUGHT_STREAM_TAGS) + r")\s*>",
+    re.IGNORECASE,
+)
+_FENCE = "```"
+
+
+class _ThoughtStreamFilter:
+    """跨分块识别思维链标签，并丢弃其中的内容。
+
+    - 只认 thought / think / thinking / reasoning 四种标签，其余文字原样放行
+    - 代码块（``` 围栏）内部一律原样放行，避免误伤教程、代码片段
+    - 孤立的闭合标签会被删掉；未闭合的开始标签，其后内容全部视为思维链
+    """
+
+    TAG_NAMES = _THOUGHT_STREAM_TAGS
+
+    def __init__(self, keep_code: bool = True, unclosed_policy: str = "line_start"):
+        self.buf = ""
+        self.in_thought = None
+        self.in_fence = False
+        self.keep_code = keep_code
+        # 未闭合开始标签的处理：line_start=只有段落开头才吞后续 / always=一律吞 / tag_only=只删标签
+        self.unclosed_policy = unclosed_policy
+        # 当前是否处于“行首”（前面只有空白）
+        self.line_start = True
+
+    def _note_output(self, text: str) -> None:
+        if not text:
+            return
+        idx = text.rfind("\n")
+        if idx != -1:
+            self.line_start = not text[idx + 1:].strip()
+        elif text.strip():
+            self.line_start = False
+
+    def _trailing_partial_open(self) -> int:
+        """末尾可能是标签开头时，返回需要暂留的长度。"""
+        idx = self.buf.rfind("<")
+        if idx == -1:
+            return 0
+        suffix = self.buf[idx:].lower()
+        if len(suffix) > 24:
+            return 0
+        for name in self.TAG_NAMES:
+            for candidate in (f"<{name}>", f"<{name} ", f"</{name}>", f"</{name} "):
+                if candidate.startswith(suffix):
+                    return len(suffix)
+        return 0
+
+    def _trailing_backticks(self) -> int:
+        n = 0
+        for ch in reversed(self.buf):
+            if ch == "`":
+                n += 1
+            else:
+                break
+        return min(n, 3)
+
+    def feed(self, text: str) -> str:
+        if not text:
+            return ""
+        self.buf += text
+        out = []
+
+        while True:
+            # ---------- 代码块内：原样放行，只找结束围栏 ----------
+            if self.keep_code and self.in_fence:
+                idx = self.buf.find(_FENCE)
+                if idx == -1:
+                    back = self._trailing_backticks()
+                    if back:
+                        self._note_output(self.buf[:-back])
+                        out.append(self.buf[:-back])
+                        self.buf = self.buf[-back:]
+                    else:
+                        self._note_output(self.buf)
+                        out.append(self.buf)
+                        self.buf = ""
+                    return "".join(out)
+                self._note_output(self.buf[: idx + len(_FENCE)])
+                out.append(self.buf[: idx + len(_FENCE)])
+                self.buf = self.buf[idx + len(_FENCE):]
+                self.in_fence = False
+                continue
+
+            # ---------- 思维链内：一直吞到闭合标签 ----------
+            if self.in_thought:
+                close = f"</{self.in_thought}>"
+                low = self.buf.lower()
+                idx = low.find(close)
+                if idx == -1:
+                    keep = 0
+                    for size in range(min(len(low), len(close) - 1), 0, -1):
+                        if low.endswith(close[:size]):
+                            keep = size
+                            break
+                    self.buf = self.buf[-keep:] if keep else ""
+                    return "".join(out)
+                self.buf = self.buf[idx + len(close):]
+                self.in_thought = None
+                continue
+
+            # ---------- 普通文本：取最早发生的事件 ----------
+            m_open = _THOUGHT_STREAM_OPEN_RE.search(self.buf)
+            m_close = _THOUGHT_STREAM_CLOSE_RE.search(self.buf)
+            pos_fence = self.buf.find(_FENCE) if self.keep_code else -1
+
+            events = []
+            if m_open:
+                events.append((m_open.start(), "open"))
+            if m_close:
+                events.append((m_close.start(), "close"))
+            if pos_fence != -1:
+                events.append((pos_fence, "fence"))
+
+            if not events:
+                hold = self._trailing_partial_open()
+                if self.keep_code:
+                    hold = max(hold, self._trailing_backticks())
+                if hold:
+                    if hold < len(self.buf):
+                        self._note_output(self.buf[:-hold])
+                        out.append(self.buf[:-hold])
+                    self.buf = self.buf[-hold:]
+                else:
+                    self._note_output(self.buf)
+                    out.append(self.buf)
+                    self.buf = ""
+                return "".join(out)
+
+            pos, kind = min(events, key=lambda x: x[0])
+            self._note_output(self.buf[:pos])
+            out.append(self.buf[:pos])
+
+            if kind == "fence":
+                self._note_output(_FENCE)
+                out.append(_FENCE)
+                self.buf = self.buf[pos + len(_FENCE):]
+                self.in_fence = True
+                continue
+
+            if kind == "close":
+                # 孤立的闭合标签：直接删掉
+                self.buf = self.buf[pos + len(m_close.group(0)):]
+                continue
+
+            tag_text = m_open.group(0)
+            if self.in_fence:
+                # 代码块里的标签当普通文字
+                self._note_output(tag_text)
+                out.append(tag_text)
+                self.buf = self.buf[pos + len(tag_text):]
+                continue
+            at_line_start = self.line_start
+            self.buf = self.buf[pos + len(tag_text):]
+
+            if self.unclosed_policy == "tag_only":
+                # 只删标签，保留后面的文字
+                continue
+            if self.unclosed_policy == "line_start" and not at_line_start:
+                # 句子中间的标签多半只是被提到，不吞后续内容
+                continue
+            self.in_thought = m_open.group(1).lower()
+
+    def flush(self) -> str:
+        if self.in_thought:
+            self.buf = ""
+            return ""
+        rest, self.buf = self.buf, ""
+        return rest
+
+
+def _patch_webchat_streaming_thought() -> bool:
+    """运行时包装 webchat 的 send_streaming，剥掉思维链。"""
+    try:
+        from astrbot.core.platform.sources.webchat.webchat_event import (
+            WebChatMessageEvent,
+        )
+        from astrbot.api.event import MessageChain
+    except Exception as exc:
+        logger.debug(f"[WzlFavorability] 未找到 webchat 适配器，跳过流式清洗：{exc}")
+        return False
+
+    original = getattr(WebChatMessageEvent, "send_streaming", None)
+    if original is None:
+        return False
+    if getattr(original, "__thought_stream_patched__", False):
+        return True
+
+    plain_cls = getattr(Comp, "Plain", None) if Comp is not None else None
+
+    async def send_streaming(self, generator, use_fallback: bool = False):
+        async def filtered():
+            if not _THOUGHT_GUARD_ENABLED:
+                # 开关关闭时原样透传，不做任何裁剪
+                async for chain in generator:
+                    yield chain
+                return
+
+            stream_filter = _ThoughtStreamFilter(
+                keep_code=_THOUGHT_GUARD_KEEP_CODE,
+                unclosed_policy=_THOUGHT_GUARD_UNCLOSED,
+            )
+            async for chain in generator:
+                if getattr(chain, "type", "") == "reasoning":
+                    # 思维链通道整块丢弃，顺带隐藏“思考了N次”面板
+                    continue
+
+                components = list(getattr(chain, "chain", []) or [])
+                if components and plain_cls is not None:
+                    kept = []
+                    for component in components:
+                        if isinstance(component, plain_cls):
+                            cleaned = stream_filter.feed(component.text or "")
+                            if not cleaned:
+                                continue
+                            component.text = cleaned
+                            kept.append(component)
+                        else:
+                            kept.append(component)
+                    if not kept:
+                        continue
+                    chain.chain = kept
+                yield chain
+
+            tail = stream_filter.flush()
+            if tail.strip() and plain_cls is not None:
+                yield MessageChain(chain=[plain_cls(tail)])
+
+        await original(self, filtered(), use_fallback)
+
+    send_streaming.__thought_stream_patched__ = True
+    WebChatMessageEvent.send_streaming = send_streaming
+    logger.info("[WzlFavorability] 已接管 webchat 流式输出，思维链将在发送途中被剥离。")
+    return True
+
+
+try:
+    _patch_webchat_streaming_thought()
+except Exception as _patch_err:  # 补丁失败不影响插件其他功能
+    logger.warning(f"[WzlFavorability] 流式思维链补丁加载失败：{_patch_err}")

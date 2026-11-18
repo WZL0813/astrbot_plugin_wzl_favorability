@@ -1,7 +1,7 @@
 name: astrbot_plugin_wzl_favorability
-version: v7.0.1
+version: v7.0.2
 author: WZL
-desc: WzlFavorability v7.0.1 搭载了全新的"认知共鸣引擎" (Cognitive Resonance Engine)。利用思维链 (CoT) 技术，让 AI 在回复前进行拟人化的心理活动推理，实现真正的情感代谢与自主决策。
+desc: WzlFavorability v7.0.2 搭载了全新的"认知共鸣引擎" (Cognitive Resonance Engine)。利用思维链 (CoT) 技术，让 AI 在回复前进行拟人化的心理活动推理，实现真正的情感代谢与自主决策。同时内置思维链泄漏防护：普通发送与流式输出下，<thought> 标签及其内容都会被剥离，reasoning 通道静默丢弃，不会漏进正文。
 repo: https://github.com/WZL0813/astrbot_plugin_wzl_favorability/
 help: |
   可用命令:
@@ -18,3 +18,9 @@ help: |
   - /重置好感 <ID> - 一键重置并移除黑名单
   - /查看好感 <ID> - 偷看用户情感状态
   - /备份数据 - 手动触发数据持久化
+
+  说明:
+  - 回复中的 <thought> / <think> 等思维链标签（含流式输出）会被自动剥离，
+    聊天界面不会出现“思考了 N 次”面板，也无需手动清理。
+  - 每个指令在配置页都有独立的开关（cmd_*），默认全部开启；
+    关掉后普通用户会收到“暂未开启”的提示，管理员与主人不受限制。

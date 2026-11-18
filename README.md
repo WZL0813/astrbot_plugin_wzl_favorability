@@ -25,6 +25,8 @@ WzlFavorability 是一个基于 **LLM 思维链 (Chain of Thought)** 技术的�
 
 在回复你之前，AI 会先在脑海中进行一场**“心理活动”**：感知你的语气、回忆你们的关系、平复自己的情绪，最后才决定说什么。这让它不再是一个冷冰冰的问答机器，而是一个有着喜怒哀乐、会记仇、会心软的“数字生命”。
 
+插件同时内置**思维链泄漏防护**：无论普通回复还是流式输出，写在 `<thought>` 里的内心戏都不会漏进正文，`reasoning` 通道也会被静默丢弃。
+
 ---
 
 ## ✨ 深度功能解析 | Deep Dive
@@ -112,7 +114,37 @@ AI 的情感表达不再是单一的“开心”或“生气”，它支持 **�
 - 🛡️ **安全写入**：原子性写入操作，防止数据损坏
 - 🔄 **自动备份**：支持手动触发数据备份到独立目录
 
+### 4. 思维链泄漏防护（含流式输出）`v7.0.2+`
+- 🧼 **发送前清洗**：`on_decorating_result` 钩子会扫描正文中的 `<thought>` / `<think>` / `<thinking>` / `<reasoning>` 标签，连同内容一并删除，并清理未闭合的残缺标签
+- 🌊 **流式补丁**：AstrBot 核心在流式输出时会跳过"发送前钩子"（`result_decorate` 遇到 `STREAMING_RESULT` 直接返回），因此插件在加载阶段额外包装 `WebChatMessageEvent.send_streaming`，对每个分块做同一套清洗
+- 🧩 **跨块识别**：标签被拆成两个分块（如 `<tho` + `ght>`）也能正确识别；开头标签未闭合时，其后内容一律视为思维链丢弃
+- 🚫 **推理通道丢弃**：`reasoning` 类型的分块整块略过，不再出现"思考了 N 次"的折叠面板
+- ✅ **零侵入**：仅在内存中包装发送函数，不修改 AstrBot 任何源码文件；重载插件即失效复原，重启后自动重新挂载
+- 🔧 **可开关**：配置项 `thought_guard`（默认开启）。关闭后流式分块原样透传，发送前钩子也不再清洗正文，仅保留情感解析逻辑
+- 🧾 **只认四种标签**：`thought` / `think` / `thinking` / `reasoning`。其它尖括号（比较符号、HTML 片段、普通文字）一律不动
+- 💻 **代码块豁免**：配置项 `thought_guard_keep_code`（默认开启）。被 ``` 围起来的代码与教程内容原样保留，即使里面写着 `<thought>` 也不会被吞
+- ✂️ **未闭合策略**：配置项 `thought_guard_unclosed`。`line_start`（默认，只有段落开头的标签才吞后续）、`always`（见到标签就吞）、`tag_only`（只删标签保留文字）
+- 🔓 **与"心理显示"共存**：`/心理显示` 开启时，【内心独白】是插件在 `on_llm_response` 阶段重新拼进正文的纯文本，不依赖推理通道，因此不受清洗影响
+
 ---
+### 5. 指令开关（逐项开关）
+- 🎛️ **一指令一开关**：配置页里每个指令都有独立的布尔开关，默认全部开启，像开灯一样点一下即可
+- 👑 **管理员豁免**：`admin_qq_list` 与 `owner_qq_list` 中的账号永远不受限制，便于事后补救
+- 🔒 **即时上锁**：关掉某项后，普通用户触发该指令只会收到一句「【指令名】暂未开启」，不消耗任何数据
+
+| 配置项 | 对应指令 |
+| :--- | :--- |
+| `cmd_favour_panel` | `/好感度` |
+| `cmd_status_display` | `/状态显示` |
+| `cmd_thought_display` | `/心理显示` |
+| `cmd_favour_rank` | `/好感排行` |
+| `cmd_bad_rank` | `/负好感排行` |
+| `cmd_blacklist_stats` | `/黑名单统计` |
+| `cmd_cache_stats` | `/缓存统计` |
+| `cmd_admin_set_emotion` | `/设置情感` |
+| `cmd_admin_reset_favor` | `/重置好感` |
+| `cmd_admin_view_favor` | `/查看好感` |
+| `cmd_admin_backup` | `/备份数据` |
 
 ## 🛠️ 安装与配置 | Installation
 
@@ -135,6 +167,8 @@ AI 的情感表达不再是单一的“开心”或“生气”，它支持 **�
 ---
 
 ## 🎮 指令手册 | Commands
+
+> **权限说明**：每个指令在配置页都有独立的开关键（`cmd_*`），默认全部开启；关掉某项后普通用户就无法使用该指令。管理员与主人（`admin_qq_list` / `owner_qq_list`）不受此限制。
 
 ### 🙋‍♂️ 用户指令 (User)
 
@@ -245,7 +279,35 @@ history_clean_pattern = r"(?:```(?:xml|text)?\s*)?<(?:thought|thinking)>[\s\S]*?
 
 ## 📅 版本历史 | Version History
 
-<details open> <summary><strong>🎯 v7.0.1 - 思考清洗架构全面升级 (Current)</strong></summary>
+<details open> <summary><strong>🔧 v7.0.2 增补 - 流式输出下的思维链清洗 (Current)</strong></summary>
+
+问题现象：在 WebUI webchat 等开启流式输出的场景里，回复正文会出现裸露的 `<thought>` 标签与其中的内心戏，聊天界面还会冒出“思考了 N 次”的折叠面板。
+
+根因：AstrBot 的“发送前钩子”（`on_decorating_result`）对流式结果直接跳过——`result_decorate/stage.py` 遇到 `STREAMING_RESULT` 时提前 return，只在 `STREAMING_FINISH` 才调用钩子；而流式结果由 `respond/stage.py` 直接交给平台适配器的 `send_streaming` 逐块下发，因此原有的发送前清洗完全失效。
+
+修复：插件加载阶段包装 `WebChatMessageEvent.send_streaming`，把 `reasoning` 类型的分块整块略过（“思考了 N 次”面板随之消失），其余分块里的纯文本逐块过一遍跨块过滤器，丢弃标签及其内容后再放行。
+
+跨块与残缺处理：标签被拆成两块（`<tho` + `ght>`）仍能识别；开头标签未闭合时，其后内容全部按思维链丢弃；正文里正常的 `<` 符号不会被误吞。
+
+零侵入：只在内存中包装发送函数，不修改 AstrBot 任何源码文件；重载插件即自然复原，重启后随插件加载重新挂载。
+
+兼容性：`/心理显示` 的【内心独白】是 `on_llm_response` 阶段重新拼进正文的纯文本，不走推理通道，因此不受本次清洗影响。
+
+</details><details open> <summary><strong>🩹 v7.0.2 - 内部自检提示外泄修复</strong></summary>
+
+问题现象：回复正文末尾会跟着出现“（若琳心理自检：请报告当前情感状态）”，把内部触发标记当成台词发给了用户（见 2026-11-09 21:34 日志 `Prepare to send` 记录）。
+
+根因：System Prompt 中“若琳在每一次回复完后都会有‘（若琳心理自检…）’”的表述被模型理解成“每次回复都要把这句话补在末尾”；旧版 One-Shot 样本的 assistant 回复也强化了这一行为，而当时的清洗链只处理 `<thought>`，不处理自检括注。
+
+修复一（Prompt 纠偏）：把该段改写为“内部自检标记协议（严禁外露）”，明确这句只是内部信号，仅在收到的消息**恰好就是该括注本身**时才用一句话报告状态，其余任何情况禁止写出、复述、附加。
+
+修复二（样本纠偏）：One-Shot 的 assistant 回复改为“心情平稳喵，尾巴还有点懒”，不再示范复述提示语。
+
+修复三（三道输出闸门）：新增 `_sanitize_self_check()`，在 `on_llm_response`、`on_decorating_result`、历史清洗三处统一抹掉自检括注；跨行、未闭合、裸行、列表项、句中合并等写法均覆盖；若整段只剩自检标记则丢弃该消息段，不再发送空壳。
+
+修复四（避免误伤）：只在命中关键词时介入，且整行删除限定为“行首即自检提示”或“带冒号/固定措辞”的行，正常句子里出现的“心理自检”字样不会被误删。
+
+</details><details> <summary><strong>🎯 v7.0.1 - 思考清洗架构全面升级</strong></summary>
 
 重大版本升级：从 v6.x 跨至 v7.0.0，历经 4 次迭代修复了 thought/think 信息泄露的全部场景。
 

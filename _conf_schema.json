@@ -32,13 +32,17 @@
     "admin_qq_list": {
         "description": "管理员QQ列表",
         "type": "list",
-        "default": [2411273874],
+        "default": [
+            2411273874
+        ],
         "hint": "在此列表中的QQ号可以使用管理员命令"
     },
     "owner_qq_list": {
         "description": "主人QQ列表",
         "type": "list",
-        "default": [2411273874],
+        "default": [
+            2411273874
+        ],
         "hint": "在此列表中的QQ号将被识别为主人关系，享有最高优先级"
     },
     "plugin_priority": {
@@ -46,5 +50,89 @@
         "type": "int",
         "default": 100000,
         "hint": "建议保持高优先级，以便先于其他插件处理情感拦截"
+    },
+    "thought_guard": {
+        "description": "思维链防护（含流式输出）",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后，回复正文里的 <thought>/<think>/<reasoning> 标签及其内容会被剥离，流式输出中的 reasoning 分块（“思考了N次”面板）也会被静默丢弃。关闭后仅保留原有的思维链提取逻辑，不再清洗正文。"
+    },
+    "thought_guard_keep_code": {
+        "description": "代码块内不清理",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后，被 ``` 围起来的代码/教程内容原样保留，即使里面出现 <thought> 也不会被删。防止讲解标签时被误伤。"
+    },
+    "thought_guard_unclosed": {
+        "description": "未闭合标签的处理策略",
+        "type": "string",
+        "default": "line_start",
+        "hint": "line_start（推荐）：只有出现在段落开头的开始标签才把后面内容当作思维链丢弃；always：只要见到开始标签就丢弃其后内容；tag_only：只删标签本身，保留后面的文字。"
+    },
+    "cmd_favour_panel": {
+        "description": "好感度面板 指令",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后普通用户无法使用「/好感度」查看完整情感状态面板；管理员与主人不受限制。"
+    },
+    "cmd_status_display": {
+        "description": "状态显示 指令",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后普通用户无法使用「/状态显示」开关对话后的情感小尾巴；管理员与主人不受限制。"
+    },
+    "cmd_thought_display": {
+        "description": "心理显示 指令",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后普通用户无法使用「/心理显示」开关 AI 的内心独白；管理员与主人不受限制。"
+    },
+    "cmd_favour_rank": {
+        "description": "好感排行 指令",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后普通用户无法使用「/好感排行」查看好感度榜单；管理员与主人不受限制。"
+    },
+    "cmd_bad_rank": {
+        "description": "负好感排行 指令",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后普通用户无法使用「/负好感排行」查看黑名单预备役榜单；管理员与主人不受限制。"
+    },
+    "cmd_blacklist_stats": {
+        "description": "黑名单统计 指令",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后普通用户无法使用「/黑名单统计」查看被拦截用户统计；管理员与主人不受限制。"
+    },
+    "cmd_cache_stats": {
+        "description": "缓存统计 指令",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后普通用户无法使用「/缓存统计」查看系统性能指标；管理员与主人不受限制。"
+    },
+    "cmd_admin_set_emotion": {
+        "description": "设置情感 指令",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后普通用户无法使用「/设置情感」管理员指令；管理员与主人不受限制。"
+    },
+    "cmd_admin_reset_favor": {
+        "description": "重置好感 指令",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后普通用户无法使用「/重置好感」管理员指令；管理员与主人不受限制。"
+    },
+    "cmd_admin_view_favor": {
+        "description": "查看好感 指令",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后普通用户无法使用「/查看好感」管理员指令；管理员与主人不受限制。"
+    },
+    "cmd_admin_backup": {
+        "description": "备份数据 指令",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后普通用户无法使用「/备份数据」管理员指令；管理员与主人不受限制。"
     }
 }
